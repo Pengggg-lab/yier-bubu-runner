@@ -184,6 +184,9 @@
   /* 复活 */
   #revive .panel{padding:16px;width:min(100%,380px)}
   #revive h2{font-size:19px;color:#ffe7a6}
+  .revive-choice{display:flex;flex-direction:column;gap:10px;margin-top:16px}
+  .revive-choice .primary{margin-top:0}
+  .revive-progress{margin:10px 0 0!important;font-size:12px;color:#ffe2a0;font-weight:700}
   .video-wrap{
     position:relative;margin:12px auto 4px;width:100%;max-width:250px;
     aspect-ratio:9/16;max-height:46vh;border-radius:18px;overflow:hidden;
@@ -279,14 +282,21 @@
 
   <div id="revive" class="overlay hidden">
     <div class="panel">
-      <h2>看布布跳舞复活</h2>
-      <p>星星用完了？看完这支舞可以复活，但复活后只有一次机会。</p>
-      <div class="video-wrap">
-        <video id="reviveVideo" playsinline webkit-playsinline preload="auto" muted></video>
-        <span class="video-hint">轻触视频开声音</span>
+      <h2 id="reviveTitle">星星用完了</h2>
+      <p id="reviveDesc">看布布跳舞 3 遍可以复活，也可以直接结算。</p>
+      <div id="reviveChoice" class="revive-choice">
+        <button id="watchReviveBtn" class="primary">看布布跳舞复活</button>
+        <button id="skipReviveBtn" class="ghost">跳过，直接结算</button>
       </div>
-      <button id="reviveContinue" class="primary hidden">继续跑！</button>
-      <p class="revive-note">复活后再撞到障碍，本局立即结束</p>
+      <div id="revivePlay" class="hidden">
+        <div class="video-wrap">
+          <video id="reviveVideo" playsinline webkit-playsinline preload="auto" muted></video>
+          <span class="video-hint">轻触视频开声音</span>
+        </div>
+        <p id="reviveProgress" class="revive-progress">第 1/3 遍播放中…</p>
+        <button id="reviveContinue" class="primary hidden">继续跑！</button>
+      </div>
+      <p class="revive-note">完整看完 3 遍才能复活；复活后再撞到障碍，本局立即结束</p>
     </div>
   </div>
 
@@ -351,6 +361,10 @@ var startBtn = $("#startBtn"), bestScoreEl = $("#bestScore");
 var starsEl = $("#stars"), coinCountEl = $("#coinCount"), scoreValEl = $("#scoreVal");
 var timeFillEl = $("#timeFill"), timeTextEl = $("#timeText"), toastEl = $("#toast");
 var reviveVideo = $("#reviveVideo"), reviveContinueBtn = $("#reviveContinue");
+var reviveTitle = $("#reviveTitle"), reviveDesc = $("#reviveDesc");
+var reviveChoice = $("#reviveChoice"), revivePlay = $("#revivePlay");
+var watchReviveBtn = $("#watchReviveBtn"), skipReviveBtn = $("#skipReviveBtn");
+var reviveProgress = $("#reviveProgress");
 var flashEl = $("#flash");
 
 /* ---------------- 声音 ---------------- */
@@ -881,15 +895,35 @@ function makeBearSprite(cfg){
   pivot.add(model);
   root.add(pivot);
 
-  var plane = new THREE.PlaneGeometry(1,1);
+  var plane = new THREE.PlaneGeometry(1,1,24,32);
+  var legUniforms = {uSwing:{value:0}, uTuck:{value:0}};
   function spriteMat(key){
-    return new THREE.MeshBasicMaterial({
+    var mat = new THREE.MeshBasicMaterial({
       map:spriteTex[key],
       transparent:true,
       alphaTest:0.12,
       depthWrite:true,
       side:THREE.DoubleSide
     });
+    mat.onBeforeCompile = function(shader){
+      shader.uniforms.uSwing = legUniforms.uSwing;
+      shader.uniforms.uTuck = legUniforms.uTuck;
+      shader.vertexShader = "uniform float uSwing;\nuniform float uTuck;\n" + shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace(
+        "#include <begin_vertex>",
+        [
+          "#include <begin_vertex>",
+          "float legT = clamp((-transformed.y - 0.16) / 0.30, 0.0, 1.0);",
+          "float legSide = smoothstep(0.015, 0.16, abs(transformed.x));",
+          "float legW = legT * legSide;",
+          "float sgn = transformed.x < 0.0 ? -1.0 : 1.0;",
+          "transformed.y += legW * (uSwing * sgn * 0.06 + uTuck * 0.06);",
+          "transformed.x += legW * sgn * (abs(uSwing) * 0.02 + uTuck * 0.022);"
+        ].join("\n")
+      );
+    };
+    mat.customProgramCacheKey = function(){ return "bearLegs"; };
+    return mat;
   }
   var front = new THREE.Mesh(plane, spriteMat(cfg.front));
   front.scale.set(H*cfg.fa,H,1);
@@ -907,14 +941,41 @@ function makeBearSprite(cfg){
   shadow.position.y = 0.015;
   root.add(shadow);
 
-  return {root:root,pivot:pivot,model:model,front:front,back:back,shadow:shadow,height:H};
+  var ball = new THREE.Group();
+  ball.position.y = 0.62;
+  var ballGeo = new THREE.SphereGeometry(0.55,16,12);
+  var ballMesh = new THREE.Mesh(ballGeo, new THREE.MeshBasicMaterial({color:cfg.fur}));
+  ball.add(ballMesh);
+  var ballOutline = new THREE.Mesh(ballGeo, new THREE.MeshBasicMaterial({color:cfg.dark,side:THREE.BackSide}));
+  ballOutline.scale.setScalar(1.045);
+  ball.add(ballOutline);
+  [-1,1].forEach(function(side){
+    var ear = new THREE.Mesh(new THREE.SphereGeometry(0.14,10,8), new THREE.MeshBasicMaterial({color:cfg.earDark?cfg.dark:cfg.fur}));
+    ear.position.set(side*0.28,0.43,0);
+    ball.add(ear);
+    if(!cfg.earDark){
+      var inner = new THREE.Mesh(new THREE.SphereGeometry(0.075,8,6), new THREE.MeshBasicMaterial({color:cfg.dark}));
+      inner.position.set(side*0.28,0.45,0.09);
+      ball.add(inner);
+    }
+    var foot = new THREE.Mesh(new THREE.SphereGeometry(0.105,10,8), new THREE.MeshBasicMaterial({color:cfg.dark}));
+    foot.position.set(side*0.2,-0.44,0.08);
+    ball.add(foot);
+  });
+  var ballTail = new THREE.Mesh(new THREE.TorusGeometry(0.1,0.028,6,16), new THREE.MeshBasicMaterial({color:cfg.dark}));
+  ballTail.position.set(0,0,-0.53);
+  ball.add(ballTail);
+  ball.visible = false;
+  root.add(ball);
+
+  return {root:root,pivot:pivot,model:model,front:front,back:back,shadow:shadow,ball:ball,height:H,uniforms:legUniforms};
 }
 
 var bears = {};
 function buildBears(){
   prepareSprites();
-  bears.yier = makeBearSprite({front:"yierFront",back:"yierBack",fa:235/319,ba:243/351});
-  bears.bubu = makeBearSprite({front:"bubuFront",back:"bubuBack",fa:223/302,ba:206/288});
+  bears.yier = makeBearSprite({front:"yierFront",back:"yierBack",fa:235/319,ba:243/351,fur:0xfffaf1,dark:0x3b2727,earDark:true});
+  bears.bubu = makeBearSprite({front:"bubuFront",back:"bubuBack",fa:223/302,ba:206/288,fur:0xac745a,dark:0x4a2e26,earDark:false});
   bears.yier.root.position.set(-1.1,0,-1);
   bears.bubu.root.position.set(1.1,0,-1);
   scene.add(bears.yier.root);
@@ -994,7 +1055,7 @@ var G = {
   speed:13, spawnT:1.6, coinT:1.2,
   lane:1, x:0, y:0, vy:0, jumping:false, pendingRoll:false,
   rollT:0, invuln:0, runT:0,
-  reviveUsed:false, shake:0, shakeT:0, tripleLast:false,
+  reviveUsed:false, reviveSkipped:false, shake:0, shakeT:0, tripleLast:false,
   obstacles:[], coinsArr:[], flashT:0
 };
 var GAME_TIME = 600;
@@ -1019,6 +1080,7 @@ function selectChar(key){
     var b = bears[k];
     b.front.visible = true;
     b.back.visible = false;
+    b.ball.visible = false;
     b.model.scale.setScalar(k===key ? 1.06 : 0.97);
   });
   initAudio(); startBgm();
@@ -1030,7 +1092,7 @@ function resetRun(){
   G.speed = 13; G.spawnT = 1.6; G.coinT = 1.2;
   G.lane = 1; G.x = 0; G.y = 0; G.vy = 0; G.jumping = false; G.pendingRoll = false;
   G.rollT = 0; G.invuln = 0; G.runT = 0;
-  G.reviveUsed = false; G.shake = 0; G.flashT = 0; G.tripleLast = false;
+  G.reviveUsed = false; G.reviveSkipped = false; G.shake = 0; G.flashT = 0; G.tripleLast = false;
   clearObjects();
   updateStars(); updateHud(true);
 }
@@ -1045,12 +1107,15 @@ function startGame(){
     b.root.position.set(0,0,0);
     b.root.rotation.set(0,0,0);
     b.pivot.rotation.set(0,0,0);
+    b.uniforms.uSwing.value = 0;
+    b.uniforms.uTuck.value = 0;
     b.pivot.position.y = b.height/2;
     b.model.rotation.set(0,0,0);
     b.model.position.set(0,0,0);
     b.model.scale.setScalar(1);
     b.front.visible = false;
     b.back.visible = true;
+    b.ball.visible = false;
     b.shadow.visible = true;
   });
   menuEl.classList.add("hidden");
@@ -1091,12 +1156,15 @@ function backToMenu(keepSelection){
     b.root.position.set(k==="yier"?-1.1:1.1,0,-1);
     b.root.rotation.set(0,0,0);
     b.pivot.rotation.set(0,0,0);
+    b.uniforms.uSwing.value = 0;
+    b.uniforms.uTuck.value = 0;
     b.pivot.position.y = b.height/2;
     b.model.rotation.set(0,0,0);
     b.model.position.set(0,0,0);
     b.model.scale.setScalar(k===G.selected ? 1.06 : 1);
     b.front.visible = true;
     b.back.visible = false;
+    b.ball.visible = false;
   });
   setCamera("menu");
   if(bgm.paused) startBgm();
@@ -1109,7 +1177,7 @@ function endGame(win){
   if(score > best){ best = score; store.set(LS_BEST, String(best)); }
   $("#overBadge").textContent = win ? "十分钟挑战完成" : "本局结束";
   $("#overTitle").textContent = win ? "通关！" : "差一点点";
-  $("#overSub").textContent = win ? "一二和布布陪你跑完了全程。" : (G.reviveUsed ? "复活后只有一次机会，再撞到障碍就结束了。" : "再来一次，冲过十分钟。");
+  $("#overSub").textContent = win ? "一二和布布陪你跑完了全程。" : (G.reviveSkipped ? "你选择了直接结算，再来一局吧。" : (G.reviveUsed ? "复活后只有一次机会，再撞到障碍就结束了。" : "再来一次，冲过十分钟。"));
   $("#endScore").textContent = score;
   $("#endCoins").textContent = G.coins;
   $("#endDist").textContent = Math.floor(G.distance) + " m";
@@ -1122,27 +1190,64 @@ function endGame(win){
 }
 
 /* ---------------- 复活流程 ---------------- */
-var reviveFallback = null;
+var reviveGapTimer = null;
+var revivePlays = 0;
+var reviveStarted = false;
+
 function triggerRevive(){
   G.state = "revive";
   G.reviveUsed = true;
+  G.reviveSkipped = false;
   reviveEl.classList.remove("hidden");
+  reviveTitle.textContent = "星星用完了";
+  reviveDesc.textContent = "看布布跳舞 3 遍可以复活，也可以直接结算。";
+  reviveChoice.classList.remove("hidden");
+  revivePlay.classList.add("hidden");
   reviveContinueBtn.classList.add("hidden");
+  reviveContinueBtn.textContent = "继续跑！";
+  reviveProgress.textContent = "第 1/3 遍播放中…";
+  reviveVideo.pause();
   bgm.pause();
-  if(!reviveVideo.src) reviveVideo.src = VIDEO_SRC;
+  revivePlays = 0;
+  reviveStarted = false;
+  clearTimeout(reviveGapTimer);
+}
+
+function playReviveRound(n){
+  reviveProgress.textContent = "第 " + n + "/3 遍播放中…";
+  reviveContinueBtn.classList.add("hidden");
   reviveVideo.muted = true;
   try{ reviveVideo.currentTime = 0; }catch(e){}
   var p = reviveVideo.play();
-  if(p && p.catch) p.catch(function(){});
-  clearTimeout(reviveFallback);
-  reviveFallback = setTimeout(function(){
-    reviveContinueBtn.classList.remove("hidden");
-  }, 9000);
+  if(p && p.catch) p.catch(function(){ reviveProgress.textContent = "请轻触视频继续播放"; });
 }
-function resumeFromRevive(){
-  clearTimeout(reviveFallback);
+
+function startReviveWatch(){
+  if(G.state !== "revive" || reviveStarted) return;
+  reviveStarted = true;
+  reviveChoice.classList.add("hidden");
+  revivePlay.classList.remove("hidden");
+  reviveTitle.textContent = "看布布跳舞复活";
+  reviveDesc.textContent = "完整看完 3 遍才能复活。";
+  if(!reviveVideo.src) reviveVideo.src = VIDEO_SRC;
+  revivePlays = 0;
+  playReviveRound(1);
+}
+
+function skipRevive(){
+  if(G.state !== "revive") return;
+  clearTimeout(reviveGapTimer);
   reviveVideo.pause();
   reviveEl.classList.add("hidden");
+  G.reviveSkipped = true;
+  endGame(false);
+}
+
+function resumeFromRevive(){
+  clearTimeout(reviveGapTimer);
+  reviveVideo.pause();
+  reviveEl.classList.add("hidden");
+  reviveStarted = false;
   G.lives = 1; G.invuln = 2.2; G.y = 0; G.vy = 0; G.jumping = false; G.rollT = 0;
   G.obstacles.forEach(function(o){ if(o.z > -26){ scene.remove(o.mesh); o.dead = true; } });
   G.obstacles = G.obstacles.filter(function(o){ return !o.dead; });
@@ -1153,11 +1258,24 @@ function resumeFromRevive(){
   showToast("复活成功！这一次再撞到障碍就结束", 3);
 }
 reviveVideo.addEventListener("ended", function(){
-  clearTimeout(reviveFallback);
-  reviveContinueBtn.classList.remove("hidden");
+  if(G.state !== "revive" || !reviveStarted) return;
+  revivePlays++;
+  if(revivePlays < 3){
+    reviveProgress.textContent = "已看完 " + revivePlays + "/3 遍，准备下一遍…";
+    clearTimeout(reviveGapTimer);
+    reviveGapTimer = setTimeout(function(){
+      if(G.state === "revive") playReviveRound(revivePlays+1);
+    }, 450);
+  } else {
+    reviveProgress.textContent = "3/3 遍已看完，可以复活了！";
+    reviveContinueBtn.classList.remove("hidden");
+  }
 });
 reviveVideo.addEventListener("error", function(){
-  setTimeout(function(){ reviveContinueBtn.classList.remove("hidden"); }, 1200);
+  if(G.state !== "revive" || !reviveStarted) return;
+  reviveProgress.textContent = "视频加载失败";
+  reviveContinueBtn.textContent = "视频无法播放，直接复活";
+  reviveContinueBtn.classList.remove("hidden");
 });
 reviveVideo.addEventListener("click", function(){
   reviveVideo.muted = !reviveVideo.muted;
@@ -1210,7 +1328,7 @@ function addCoinArc(lane,z){
 }
 function spawnRow(zBase){
   var z = typeof zBase === "number" ? zBase : -96;
-  var p = G.time / GAME_TIME;
+  var p = Math.min(1, G.time/360);
   G.tripleLast = false;
   if(p > 0.5 && Math.random() < 0.1 + (p-0.5)*0.12){
     var kindAll = Math.random() < 0.6 ? "jump" : "roll";
@@ -1296,6 +1414,8 @@ function animateBearMenu(b,t){
   var phase = b===bears.yier ? 0 : 1.7;
   b.model.position.y = Math.sin(t*1.9 + phase)*0.045;
   b.model.rotation.set(0,0,Math.sin(t*0.8 + phase)*0.025);
+  b.uniforms.uSwing.value = Math.sin(t*3.2 + phase)*0.22;
+  b.uniforms.uTuck.value = 0;
 }
 
 function updateEnvironment(dt){
@@ -1376,17 +1496,45 @@ function updatePlayer(dt){
   b.shadow.material.opacity = clamp(0.28 - G.y*0.06,0.06,0.28);
 
   G.runT += dt * (4 + G.speed*0.32);
-  var bob = Math.abs(Math.sin(G.runT))*0.05;
+  var bob = Math.abs(Math.sin(G.runT))*0.07;
 
   if(G.rollT > 0){
     var rp = 1 - G.rollT/0.72;
-    b.pivot.rotation.z = -rp * Math.PI * 2;
-    b.pivot.position.y = 1.18;
-    b.model.position.y = 0;
-    b.model.rotation.z = 0;
-    b.model.scale.set(1.02,0.62,1);
+    b.uniforms.uSwing.value = 0;
+    b.uniforms.uTuck.value = 1;
+    b.root.position.z = -Math.sin(rp*Math.PI)*0.35;
+    if(rp < 0.16 || rp > 0.84){
+      var tuck = rp < 0.16 ? rp/0.16 : (1-rp)/0.16;
+      var sy = 1 - 0.32*tuck;
+      b.front.visible = false;
+      b.back.visible = true;
+      b.ball.visible = false;
+      b.pivot.rotation.set(0,0,0);
+      b.pivot.position.y = (b.height/2)*sy;
+      b.model.position.y = 0;
+      b.model.rotation.set(0,0,0);
+      b.model.scale.set(1,sy,1);
+    } else {
+      b.front.visible = false;
+      b.back.visible = false;
+      b.ball.visible = true;
+      var bs = Math.min((rp-0.16)/0.08, (0.84-rp)/0.08, 1);
+      b.ball.scale.setScalar(clamp(bs,0.2,1));
+      b.ball.rotation.x = -rp * Math.PI * 2;
+      b.pivot.rotation.set(0,0,0);
+      b.pivot.position.y = b.height/2;
+      b.model.position.y = 0;
+      b.model.rotation.set(0,0,0);
+      b.model.scale.set(1,1,1);
+    }
   } else {
-    b.pivot.rotation.z = 0;
+    b.root.position.z = 0;
+    b.front.visible = false;
+    b.back.visible = true;
+    b.ball.visible = false;
+    b.uniforms.uSwing.value = G.jumping ? 0 : Math.sin(G.runT*2.2);
+    b.uniforms.uTuck.value = G.jumping ? 1 : 0;
+    b.pivot.rotation.set(0,0,0);
     b.pivot.position.y = b.height/2;
     b.model.position.y = (G.jumping ? 0 : bob);
     b.model.rotation.z = clamp((targetX - G.x)*0.12,-0.2,0.2);
@@ -1397,17 +1545,19 @@ function updatePlayer(dt){
 }
 
 function updateWorld(dt){
-  var p = clamp(G.time/GAME_TIME,0,1);
-  G.speed = 13 + 23*Math.pow(p,0.65);
+  var p = G.time/360;
+  var ramp = clamp(p,0,1);
+  G.speed = Math.min(42, 13 + 23*Math.pow(clamp(p,0,1.5),0.62));
   G.distance += G.speed*dt;
   G.time += dt;
   if(G.time >= GAME_TIME){ endGame(true); return; }
 
-  var interval = lerp(1.35, 0.5, Math.pow(p,0.7));
+  var interval = lerp(1.35, 0.5, Math.pow(ramp,0.7));
+  if(p > 1) interval = Math.max(0.38, interval - (p-1)*0.12);
   G.spawnT -= dt;
   if(G.spawnT <= 0){ spawnRow(); G.spawnT = interval + (G.tripleLast ? 0.35 : 0); }
   G.coinT -= dt;
-  if(G.coinT <= 0){ spawnCoinOnly(); G.coinT = lerp(1.8,1.0,p); }
+  if(G.coinT <= 0){ spawnCoinOnly(); G.coinT = lerp(1.8,0.9,ramp); }
 
   var i, o, c;
   for(i=G.obstacles.length-1;i>=0;i--){
@@ -1578,6 +1728,8 @@ $("#restartBtn").addEventListener("click", function(){
 });
 $("#againBtn").addEventListener("click", function(){ backToMenu(true); });
 $("#menuBtn").addEventListener("click", function(){ backToMenu(false); });
+watchReviveBtn.addEventListener("click", startReviveWatch);
+skipReviveBtn.addEventListener("click", skipRevive);
 reviveContinueBtn.addEventListener("click", function(){ resumeFromRevive(); });
 $("#muteBtn").addEventListener("click", function(){
   muted = !muted;
